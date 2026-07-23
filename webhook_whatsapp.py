@@ -97,6 +97,7 @@ def processar_mensagem_recebida(payload: dict):
 
         mensagem = value["messages"][0]
         remetente = mensagem["from"]  # número de telefone de quem mandou
+        print(f"[webhook_whatsapp] Mensagem recebida de: {remetente}")
 
         if mensagem.get("type") != "text":
             enviar_mensagem_whatsapp(
