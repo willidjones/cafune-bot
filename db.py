@@ -1,108 +1,142 @@
 """
-db.py - Camada de dados do protótipo de chatbot para pequenas empresas.
+db.py - Camada de dados do chatbot para pequenas empresas.
 
 Arquitetura multi-tenant: cada "negócio" (lojista) tem seu próprio conjunto
 de produtos/serviços, FAQ e horários de agendamento, identificado por
-`negocio_id`. No mundo real, `negocio_id` seria amarrado ao número de
-telefone da Cloud API que recebeu a mensagem.
+`negocio_id`.
+
+Usa PostgreSQL (via variável de ambiente DATABASE_URL) em vez de SQLite,
+para os dados sobreviverem a cada novo deploy — SQLite num serviço web
+comum perde tudo a cada reimplantação, já que o disco não é permanente.
+
+O restante do projeto (bot.py, admin_app.py, webhook_whatsapp.py) chama
+get_conn() e usa conn.execute(...) com placeholders '?', exatamente como
+fazia com sqlite3. O adaptador abaixo (_ConnWrapper) traduz isso pra
+psycopg2 por baixo dos panos, então essas outras partes não precisam
+saber que o banco mudou.
 """
 
-import sqlite3
+import os
 import secrets
-from pathlib import Path
 from datetime import datetime, timedelta
 
-DB_PATH = Path(__file__).parent / "bot.db"
+import psycopg2
+import psycopg2.extras
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+
+class _TranslatingCursor(psycopg2.extras.RealDictCursor):
+    """Cursor que aceita queries escritas com '?' (estilo sqlite3) e
+    traduz pra '%s' (estilo psycopg2) antes de executar. Também devolve
+    linhas com acesso por chave (row['coluna']), igual sqlite3.Row."""
+
+    def execute(self, query, params=None):
+        if params is None:
+            params = ()
+        return super().execute(query.replace("?", "%s"), params)
+
+
+class _ConnWrapper:
+    """Faz uma conexão psycopg2 se comportar o suficiente como uma conexão
+    sqlite3: permite conn.execute(...) encadeado com .fetchall()/.fetchone(),
+    e usa sempre o _TranslatingCursor."""
+
+    def __init__(self, pg_conn):
+        self._conn = pg_conn
+
+    def execute(self, query, params=()):
+        cur = self._conn.cursor(cursor_factory=_TranslatingCursor)
+        cur.execute(query, params)
+        return cur
+
+    def cursor(self):
+        return self._conn.cursor(cursor_factory=_TranslatingCursor)
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
 
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL não configurada. Defina essa variável de ambiente "
+            "com a connection string do PostgreSQL (ex: do Neon)."
+        )
+    pg_conn = psycopg2.connect(DATABASE_URL)
+    return _ConnWrapper(pg_conn)
 
 
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.executescript("""
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS negocios (
-        id INTEGER PRIMARY KEY,
+        id SERIAL PRIMARY KEY,
         nome TEXT NOT NULL,
         telefone_whatsapp TEXT UNIQUE,
         horario_funcionamento TEXT,
-        tipo_atendimento TEXT NOT NULL DEFAULT 'agendamento',  -- 'agendamento' ou 'pedido'
+        tipo_atendimento TEXT NOT NULL DEFAULT 'agendamento',
         descricao TEXT,
-        slug TEXT UNIQUE  -- link secreto que dá acesso ao painel do cliente (/loja/{slug})
+        slug TEXT UNIQUE
     );
 
     CREATE TABLE IF NOT EXISTS produtos_servicos (
-        id INTEGER PRIMARY KEY,
-        negocio_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        negocio_id INTEGER NOT NULL REFERENCES negocios(id),
         nome TEXT NOT NULL,
         descricao TEXT,
         preco REAL,
-        duracao_minutos INTEGER DEFAULT 30,  -- usado para agendamento
-        FOREIGN KEY (negocio_id) REFERENCES negocios(id)
+        duracao_minutos INTEGER DEFAULT 30
     );
 
     CREATE TABLE IF NOT EXISTS faq (
-        id INTEGER PRIMARY KEY,
-        negocio_id INTEGER NOT NULL,
-        palavras_chave TEXT NOT NULL,  -- separadas por vírgula
-        resposta TEXT NOT NULL,
-        FOREIGN KEY (negocio_id) REFERENCES negocios(id)
+        id SERIAL PRIMARY KEY,
+        negocio_id INTEGER NOT NULL REFERENCES negocios(id),
+        palavras_chave TEXT NOT NULL,
+        resposta TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS agendamentos (
-        id INTEGER PRIMARY KEY,
-        negocio_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        negocio_id INTEGER NOT NULL REFERENCES negocios(id),
         cliente_telefone TEXT NOT NULL,
         cliente_nome TEXT,
-        produto_servico_id INTEGER NOT NULL,
+        produto_servico_id INTEGER NOT NULL REFERENCES produtos_servicos(id),
         data_hora TEXT NOT NULL,
         status TEXT DEFAULT 'confirmado',
-        criado_em TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (negocio_id) REFERENCES negocios(id),
-        FOREIGN KEY (produto_servico_id) REFERENCES produtos_servicos(id)
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP(0)
     );
 
-    -- Regra de funcionamento por dia da semana (0=segunda ... 6=domingo).
-    -- Um negócio pode ter múltiplas regras (ex: manhã e tarde separadas).
     CREATE TABLE IF NOT EXISTS horario_regras (
-        id INTEGER PRIMARY KEY,
-        negocio_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        negocio_id INTEGER NOT NULL REFERENCES negocios(id),
         dia_semana INTEGER NOT NULL,
         hora_inicio TEXT NOT NULL,
-        hora_fim TEXT NOT NULL,
-        FOREIGN KEY (negocio_id) REFERENCES negocios(id)
+        hora_fim TEXT NOT NULL
     );
 
-    -- Exceções pontuais: feriado, folga, evento — sobrepõe a regra padrão
-    -- pra uma data específica.
     CREATE TABLE IF NOT EXISTS horario_excecoes (
-        id INTEGER PRIMARY KEY,
-        negocio_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        negocio_id INTEGER NOT NULL REFERENCES negocios(id),
         data TEXT NOT NULL,
-        motivo TEXT,
-        FOREIGN KEY (negocio_id) REFERENCES negocios(id)
+        motivo TEXT
     );
 
-    -- Pedidos/encomendas capturados pelo bot (usado por negócios do tipo 'pedido',
-    -- ex: produtos personalizados sob encomenda).
     CREATE TABLE IF NOT EXISTS pedidos (
-        id INTEGER PRIMARY KEY,
-        negocio_id INTEGER NOT NULL,
+        id SERIAL PRIMARY KEY,
+        negocio_id INTEGER NOT NULL REFERENCES negocios(id),
         cliente_telefone TEXT NOT NULL,
         cliente_nome TEXT,
-        produto_servico_id INTEGER NOT NULL,
+        produto_servico_id INTEGER NOT NULL REFERENCES produtos_servicos(id),
         quantidade INTEGER DEFAULT 1,
         personalizacao TEXT,
-        status TEXT DEFAULT 'novo',  -- novo, em produção, pronto, entregue, cancelado
-        criado_em TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (negocio_id) REFERENCES negocios(id),
-        FOREIGN KEY (produto_servico_id) REFERENCES produtos_servicos(id)
+        status TEXT DEFAULT 'novo',
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP(0)
     );
     """)
 
@@ -114,28 +148,21 @@ def init_db():
 
 def _migrar_schema(conn):
     """
-    Adiciona colunas novas em bancos já existentes, criados por versões
-    anteriores deste script. SQLite não faz isso sozinho quando o
-    CREATE TABLE muda — só roda a criação se a tabela ainda não existe.
-    Sempre que uma coluna nova for adicionada ao schema, o ajuste também
-    deve entrar aqui, senão bancos antigos ficam desatualizados.
+    Adiciona colunas novas em bancos já existentes. O Postgres já suporta
+    'ADD COLUMN IF NOT EXISTS' nativamente, então não precisamos checar
+    manualmente se a coluna existe antes (diferente do SQLite).
     """
     cur = conn.cursor()
-    colunas_negocios = {row[1] for row in cur.execute("PRAGMA table_info(negocios)")}
-    if "tipo_atendimento" not in colunas_negocios:
-        cur.execute(
-            "ALTER TABLE negocios ADD COLUMN tipo_atendimento TEXT NOT NULL DEFAULT 'agendamento'"
-        )
-    if "descricao" not in colunas_negocios:
-        cur.execute("ALTER TABLE negocios ADD COLUMN descricao TEXT")
-    if "slug" not in colunas_negocios:
-        cur.execute("ALTER TABLE negocios ADD COLUMN slug TEXT")
+    cur.execute("ALTER TABLE negocios ADD COLUMN IF NOT EXISTS tipo_atendimento TEXT NOT NULL DEFAULT 'agendamento'")
+    cur.execute("ALTER TABLE negocios ADD COLUMN IF NOT EXISTS descricao TEXT")
+    cur.execute("ALTER TABLE negocios ADD COLUMN IF NOT EXISTS slug TEXT")
 
     # Garante que todo negócio (novo ou antigo) tenha um slug de acesso.
-    sem_slug = cur.execute("SELECT id FROM negocios WHERE slug IS NULL OR slug = ''").fetchall()
+    cur.execute("SELECT id FROM negocios WHERE slug IS NULL OR slug = ''")
+    sem_slug = cur.fetchall()
     for row in sem_slug:
         novo_slug = secrets.token_urlsafe(8)
-        cur.execute("UPDATE negocios SET slug = ? WHERE id = ?", (novo_slug, row[0]))
+        cur.execute("UPDATE negocios SET slug = ? WHERE id = ?", (novo_slug, row["id"]))
 
 
 def seed_demo_data():
@@ -149,10 +176,11 @@ def seed_demo_data():
         return  # já tem dados, não duplica
 
     cur.execute(
-        "INSERT INTO negocios (nome, telefone_whatsapp, horario_funcionamento, slug) VALUES (?, ?, ?, ?)",
+        "INSERT INTO negocios (nome, telefone_whatsapp, horario_funcionamento, slug) "
+        "VALUES (?, ?, ?, ?) RETURNING id",
         ("Studio Bella Hair", "5547999990000", "Seg a Sáb, 9h às 19h", secrets.token_urlsafe(8)),
     )
-    negocio_id = cur.lastrowid
+    negocio_id = cur.fetchone()["id"]
 
     servicos = [
         ("Corte feminino", "Corte + escova", 80.0, 60),
@@ -179,15 +207,14 @@ def seed_demo_data():
             (negocio_id, palavras, resposta),
         )
 
-    # Seg a Sex: 9h-19h | Sábado: 9h-13h | Domingo: fechado (sem regra)
-    for dia in range(0, 5):  # 0=segunda ... 4=sexta
+    for dia in range(0, 5):
         cur.execute(
             "INSERT INTO horario_regras (negocio_id, dia_semana, hora_inicio, hora_fim) VALUES (?, ?, ?, ?)",
             (negocio_id, dia, "09:00", "19:00"),
         )
     cur.execute(
         "INSERT INTO horario_regras (negocio_id, dia_semana, hora_inicio, hora_fim) VALUES (?, ?, ?, ?)",
-        (negocio_id, 5, "09:00", "13:00"),  # 5 = sábado
+        (negocio_id, 5, "09:00", "13:00"),
     )
 
     conn.commit()
@@ -198,8 +225,9 @@ def seed_demo_data():
 def seed_cafune():
     """
     Popula a Personalizados Cafuné como negócio real, tipo 'pedido'.
-    Os produtos abaixo são só ponto de partida — edite tudo pelo painel
-    (/admin/{id}) com os itens e preços reais.
+    Slug fixo ('personalizados-cafune') de propósito, pra sobreviver a
+    qualquer reset/recriação do banco sem quebrar o link já configurado
+    na variável WHATSAPP_NEGOCIO_SLUG.
     """
     conn = get_conn()
     cur = conn.cursor()
@@ -212,10 +240,10 @@ def seed_cafune():
 
     cur.execute(
         "INSERT INTO negocios (nome, telefone_whatsapp, horario_funcionamento, tipo_atendimento, slug) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?) RETURNING id",
         ("Personalizados Cafuné", "5547900000000", "Seg a Sex, 9h às 18h", "pedido", "personalizados-cafune"),
     )
-    negocio_id = cur.lastrowid
+    negocio_id = cur.fetchone()["id"]
 
     produtos = [
         ("Caneca personalizada", "Caneca de porcelana com foto/texto à sua escolha", 39.90, 0),
@@ -245,6 +273,9 @@ def seed_cafune():
     conn.commit()
     conn.close()
     return negocio_id
+
+
+def get_negocio_by_telefone(telefone: str):
     conn = get_conn()
     row = conn.execute(
         "SELECT * FROM negocios WHERE telefone_whatsapp = ?", (telefone,)
@@ -289,11 +320,6 @@ def get_excecoes(negocio_id: int):
 
 
 def horarios_disponiveis(negocio_id: int, produto_servico_id: int, dias_a_frente: int = 7):
-    """
-    Gera horários disponíveis respeitando as regras de funcionamento por dia
-    da semana (`horario_regras`) e excluindo datas com exceção
-    (`horario_excecoes`, ex: feriado/folga) e horários já ocupados.
-    """
     conn = get_conn()
     ocupados = conn.execute(
         "SELECT data_hora FROM agendamentos WHERE negocio_id = ? AND status = 'confirmado'",
@@ -320,9 +346,9 @@ def horarios_disponiveis(negocio_id: int, produto_servico_id: int, dias_a_frente
         dia = agora + timedelta(days=d)
         dia_str = dia.strftime("%Y-%m-%d")
         if dia_str in datas_fechadas:
-            continue  # feriado/folga cadastrada
+            continue
 
-        dia_semana = dia.weekday()  # 0=segunda ... 6=domingo
+        dia_semana = dia.weekday()
         regras_do_dia = regras_por_dia.get(dia_semana, [])
 
         for regra in regras_do_dia:
@@ -334,7 +360,7 @@ def horarios_disponiveis(negocio_id: int, produto_servico_id: int, dias_a_frente
                 if slot_str not in ocupados_set:
                     disponiveis.append(slot_str)
 
-    return disponiveis[:6]  # mostra só os 6 primeiros pra não poluir o chat
+    return disponiveis[:6]
 
 
 def criar_agendamento(negocio_id, cliente_telefone, cliente_nome, produto_servico_id, data_hora):
@@ -371,11 +397,11 @@ def criar_negocio(nome, telefone_whatsapp, horario_funcionamento="", tipo_atendi
     conn = get_conn()
     cur = conn.execute(
         "INSERT INTO negocios (nome, telefone_whatsapp, horario_funcionamento, tipo_atendimento, slug) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?) RETURNING id",
         (nome, telefone_whatsapp, horario_funcionamento, tipo_atendimento, slug),
     )
+    novo_id = cur.fetchone()["id"]
     conn.commit()
-    novo_id = cur.lastrowid
     conn.close()
     return novo_id
 
@@ -388,8 +414,6 @@ def get_negocio_by_slug(slug: str):
 
 
 def excluir_negocio(negocio_id: int):
-    """Remove o negócio e tudo que depende dele (cascata manual, já que
-    SQLite não força FK por padrão em todas as conexões)."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("DELETE FROM agendamentos WHERE negocio_id = ?", (negocio_id,))
