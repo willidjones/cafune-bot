@@ -17,10 +17,11 @@ Pra pegar o link de um negócio já existente, entra em /admin/{id} — o link
 do cliente aparece no topo da página.
 """
 
-from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, JSONResponse
 
 import db
+import webhook_whatsapp as wa
 
 app = FastAPI(title="Painel do Lojista - Protótipo")
 
@@ -663,3 +664,55 @@ def mudar_status_pedido(pedido_id: int, negocio_id: int = None, slug: str = None
 def startup():
     db.init_db()
     db.seed_cafune()
+
+
+# ---------------------------------------------------------------------------
+# Webhook do WhatsApp (Meta Cloud API)
+# ---------------------------------------------------------------------------
+
+@app.get("/webhook")
+def whatsapp_verificar(request: Request):
+    """A Meta chama isso UMA VEZ quando você configura a URL do webhook,
+    pra confirmar que o endereço é seu de verdade."""
+    mode = request.query_params.get("hub.mode", "")
+    token = request.query_params.get("hub.verify_token", "")
+    challenge = request.query_params.get("hub.challenge", "")
+
+    resultado = wa.processar_verificacao(mode, token, challenge)
+    if resultado is not None:
+        return PlainTextResponse(resultado)
+    return PlainTextResponse("Token de verificação inválido.", status_code=403)
+
+
+@app.post("/webhook")
+async def whatsapp_receber(request: Request):
+    """A Meta chama isso toda vez que alguém manda mensagem pro número."""
+    payload = await request.json()
+    wa.processar_mensagem_recebida(payload)
+    return JSONResponse({"status": "ok"})
+
+
+@app.get("/webhook/status", response_class=HTMLResponse)
+def whatsapp_status():
+    """Tela simples de diagnóstico: mostra quais variáveis de ambiente
+    ainda faltam configurar, sem nunca exibir o valor delas."""
+    faltando = wa.verificar_configuracao()
+    if faltando:
+        itens = "".join(f"<li><code>{v}</code></li>" for v in faltando)
+        corpo = f"""
+        <p style="color:#c33;"><strong>Faltam configurar estas variáveis de ambiente:</strong></p>
+        <ul>{itens}</ul>
+        """
+    else:
+        corpo = '<p style="color:#0a6;"><strong>✅ Todas as variáveis de ambiente estão configuradas.</strong></p>'
+
+    return f"""
+    <html><head><meta charset="utf-8"><title>Status do Webhook</title>
+    <style>body {{ font-family: -apple-system, Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }}
+    code {{ background: #f0f0f0; padding: 2px 6px; border-radius: 4px; }}</style>
+    </head><body>
+        <h1>Status do Webhook WhatsApp</h1>
+        {corpo}
+        <p style="color:#666; font-size:13px;">Essa página nunca mostra os valores, só se existem ou não.</p>
+    </body></html>
+    """
