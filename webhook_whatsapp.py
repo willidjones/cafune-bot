@@ -74,9 +74,16 @@ def enviar_mensagem_whatsapp(destinatario: str, texto: str):
         "type": "text",
         "text": {"body": texto},
     }
-    resposta = requests.post(url, headers=headers, json=payload, timeout=10)
+    try:
+        resposta = requests.post(url, headers=headers, json=payload, timeout=10)
+    except requests.RequestException as e:
+        print(f"[webhook_whatsapp] EXCEÇÃO DE REDE ao tentar enviar mensagem: {e}")
+        return None
+
     if resposta.status_code >= 400:
         print(f"[webhook_whatsapp] Erro ao enviar mensagem: {resposta.status_code} {resposta.text}")
+    else:
+        print(f"[webhook_whatsapp] Mensagem enviada com sucesso para {destinatario}: {resposta.status_code} {resposta.text}")
     return resposta
 
 
