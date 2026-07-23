@@ -213,7 +213,7 @@ def seed_cafune():
     cur.execute(
         "INSERT INTO negocios (nome, telefone_whatsapp, horario_funcionamento, tipo_atendimento, slug) "
         "VALUES (?, ?, ?, ?, ?)",
-        ("Personalizados Cafuné", "5547900000000", "Seg a Sex, 9h às 18h", "pedido", secrets.token_urlsafe(8)),
+        ("Personalizados Cafuné", "5547900000000", "Seg a Sex, 9h às 18h", "pedido", "personalizados-cafune"),
     )
     negocio_id = cur.lastrowid
 
