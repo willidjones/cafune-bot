@@ -202,6 +202,7 @@ def _render_pagina_servicos(negocio, base, is_admin):
             <td>{s['descricao'] or ''}</td>
             <td>R$ {s['preco']:.2f}</td>
             <td>{s['duracao_minutos']} min</td>
+            <td>{'—' if s['estoque'] is None else s['estoque']}</td>
             <td>
                 <a href="{base}/servicos/{s['id']}/editar">Editar</a>
                 <form class="inline" method="post" action="{base}/servicos/{s['id']}/excluir" style="margin-left:8px;">
@@ -245,8 +246,8 @@ def _render_pagina_servicos(negocio, base, is_admin):
     <h2>Serviços / Produtos</h2>
     <div class="card">
         <table>
-            <tr><th>Nome</th><th>Descrição</th><th>Preço</th><th>Duração</th><th></th></tr>
-            {linhas or '<tr><td colspan="5">Nenhum serviço cadastrado ainda.</td></tr>'}
+            <tr><th>Nome</th><th>Descrição</th><th>Preço</th><th>Duração</th><th>Estoque</th><th></th></tr>
+            {linhas or '<tr><td colspan="6">Nenhum serviço cadastrado ainda.</td></tr>'}
         </table>
     </div>
 
@@ -260,6 +261,7 @@ def _render_pagina_servicos(negocio, base, is_admin):
             <div class="form-row">
                 <input name="preco" type="number" step="0.01" placeholder="Preço (R$)" required>
                 <input name="duracao_minutos" type="number" placeholder="Duração (min)" value="30" required>
+                <input name="estoque" type="number" placeholder="Estoque (deixe vazio = ilimitado)">
             </div>
             <button type="submit">Adicionar</button>
         </form>
@@ -307,9 +309,11 @@ def add_servico(
     descricao: str = Form(""),
     preco: float = Form(...),
     duracao_minutos: int = Form(30),
+    estoque: str = Form(""),
 ):
     negocio = db.get_negocio(negocio_id) if negocio_id else db.get_negocio_by_slug(slug)
-    db.criar_servico(negocio["id"], nome, descricao, preco, duracao_minutos)
+    estoque_val = int(estoque) if estoque.strip() != "" else None
+    db.criar_servico(negocio["id"], nome, descricao, preco, duracao_minutos, estoque_val)
     base = f"/admin/{negocio_id}" if negocio_id else f"/loja/{slug}"
     return RedirectResponse(base, status_code=303)
 
@@ -323,6 +327,7 @@ def del_servico(servico_id: int, negocio_id: int = None, slug: str = None):
 
 
 def _render_editar_servico(negocio, servico, base, is_admin):
+    estoque_atual = "" if servico["estoque"] is None else servico["estoque"]
     conteudo = f"""
     <h2>Editar serviço/produto</h2>
     <div class="card">
@@ -334,6 +339,7 @@ def _render_editar_servico(negocio, servico, base, is_admin):
             <div class="form-row">
                 <input name="preco" type="number" step="0.01" value="{servico['preco']}" placeholder="Preço (R$)" required>
                 <input name="duracao_minutos" type="number" value="{servico['duracao_minutos']}" placeholder="Duração (min)" required>
+                <input name="estoque" type="number" value="{estoque_atual}" placeholder="Estoque (vazio = ilimitado)">
             </div>
             <button type="submit">Salvar alterações</button>
             <a href="{base}" style="margin-left:10px;">Cancelar</a>
@@ -369,8 +375,10 @@ def salvar_edicao_servico(
     descricao: str = Form(""),
     preco: float = Form(...),
     duracao_minutos: int = Form(30),
+    estoque: str = Form(""),
 ):
-    db.atualizar_servico(servico_id, nome, descricao, preco, duracao_minutos)
+    estoque_val = int(estoque) if estoque.strip() != "" else None
+    db.atualizar_servico(servico_id, nome, descricao, preco, duracao_minutos, estoque_val)
     base = f"/admin/{negocio_id}" if negocio_id else f"/loja/{slug}"
     return RedirectResponse(base, status_code=303)
 

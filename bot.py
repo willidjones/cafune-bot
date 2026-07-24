@@ -84,7 +84,13 @@ def montar_menu(negocio: dict) -> str:
 
 
 def montar_catalogo(servicos: list) -> str:
-    lista = "\n".join(f"• {s['nome']} - R$ {s['preco']:.2f}" for s in servicos)
+    linhas = []
+    for s in servicos:
+        linha = f"• {s['nome']} - R$ {s['preco']:.2f}"
+        if s.get("estoque") is not None and s["estoque"] <= 0:
+            linha += " (sem estoque no momento)"
+        linhas.append(linha)
+    lista = "\n".join(linhas)
     return f"Nosso catálogo:\n\n{lista}\n\nQuer fazer um pedido? É só digitar *pedido*."
 
 
@@ -155,7 +161,13 @@ def process_message(negocio_id: int, cliente_telefone: str, texto: str) -> str:
 
 
 def _iniciar_fluxo(session, servicos, tipo):
-    lista = "\n".join(f"{i+1}. {s['nome']} - R$ {s['preco']:.2f}" for i, s in enumerate(servicos))
+    linhas = []
+    for i, s in enumerate(servicos):
+        linha = f"{i+1}. {s['nome']} - R$ {s['preco']:.2f}"
+        if s.get("estoque") is not None and s["estoque"] <= 0:
+            linha += " (sem estoque no momento)"
+        linhas.append(linha)
+    lista = "\n".join(linhas)
     if tipo == "agendamento":
         session["estado"] = ESTADO_AG_ESCOLHENDO_SERVICO
         return f"Ótimo! Qual serviço você quer agendar?\n\n{lista}\n\nDigite o número da opção."

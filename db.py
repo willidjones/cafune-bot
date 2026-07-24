@@ -91,7 +91,8 @@ def init_db():
         nome TEXT NOT NULL,
         descricao TEXT,
         preco REAL,
-        duracao_minutos INTEGER DEFAULT 30
+        duracao_minutos INTEGER DEFAULT 30,
+        estoque INTEGER  -- NULL = não controla estoque (ilimitado); número = quantidade disponível
     );
 
     CREATE TABLE IF NOT EXISTS faq (
@@ -156,6 +157,7 @@ def _migrar_schema(conn):
     cur.execute("ALTER TABLE negocios ADD COLUMN IF NOT EXISTS tipo_atendimento TEXT NOT NULL DEFAULT 'agendamento'")
     cur.execute("ALTER TABLE negocios ADD COLUMN IF NOT EXISTS descricao TEXT")
     cur.execute("ALTER TABLE negocios ADD COLUMN IF NOT EXISTS slug TEXT")
+    cur.execute("ALTER TABLE produtos_servicos ADD COLUMN IF NOT EXISTS estoque INTEGER")
 
     # Garante que todo negócio (novo ou antigo) tenha um slug de acesso.
     cur.execute("SELECT id FROM negocios WHERE slug IS NULL OR slug = ''")
@@ -438,12 +440,12 @@ def atualizar_negocio(negocio_id, nome, telefone_whatsapp, descricao, horario_fu
     conn.close()
 
 
-def atualizar_servico(servico_id, nome, descricao, preco, duracao_minutos):
+def atualizar_servico(servico_id, nome, descricao, preco, duracao_minutos, estoque=None):
     conn = get_conn()
     conn.execute(
-        "UPDATE produtos_servicos SET nome = ?, descricao = ?, preco = ?, duracao_minutos = ? "
-        "WHERE id = ?",
-        (nome, descricao, preco, duracao_minutos, servico_id),
+        "UPDATE produtos_servicos SET nome = ?, descricao = ?, preco = ?, duracao_minutos = ?, "
+        "estoque = ? WHERE id = ?",
+        (nome, descricao, preco, duracao_minutos, estoque, servico_id),
     )
     conn.commit()
     conn.close()
@@ -456,12 +458,12 @@ def get_servico(servico_id: int):
     return dict(row) if row else None
 
 
-def criar_servico(negocio_id, nome, descricao, preco, duracao_minutos):
+def criar_servico(negocio_id, nome, descricao, preco, duracao_minutos, estoque=None):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO produtos_servicos (negocio_id, nome, descricao, preco, duracao_minutos) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (negocio_id, nome, descricao, preco, duracao_minutos),
+        "INSERT INTO produtos_servicos (negocio_id, nome, descricao, preco, duracao_minutos, estoque) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (negocio_id, nome, descricao, preco, duracao_minutos, estoque),
     )
     conn.commit()
     conn.close()
@@ -527,10 +529,17 @@ def excluir_excecao(excecao_id):
 
 def criar_pedido(negocio_id, cliente_telefone, cliente_nome, produto_servico_id, quantidade, personalizacao):
     conn = get_conn()
-    conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         "INSERT INTO pedidos (negocio_id, cliente_telefone, cliente_nome, produto_servico_id, "
         "quantidade, personalizacao) VALUES (?, ?, ?, ?, ?, ?)",
         (negocio_id, cliente_telefone, cliente_nome, produto_servico_id, quantidade, personalizacao),
+    )
+    # Baixa automática no estoque — só afeta produtos com controle de estoque (estoque não-nulo).
+    # Pode ficar negativo de propósito: é o sinal de que vendeu mais do que tinha disponível.
+    cur.execute(
+        "UPDATE produtos_servicos SET estoque = estoque - ? WHERE id = ? AND estoque IS NOT NULL",
+        (quantidade, produto_servico_id),
     )
     conn.commit()
     conn.close()
