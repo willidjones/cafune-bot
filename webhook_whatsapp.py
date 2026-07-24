@@ -100,20 +100,32 @@ def processar_mensagem_recebida(payload: dict):
         value = change["value"]
 
         if "messages" not in value:
+            if "statuses" in value:
+                status = value["statuses"][0]
+                print(f"[webhook_whatsapp] STATUS da mensagem {status.get('id')}: {status.get('status')} "
+                      f"| detalhes: {status.get('errors', 'sem erro reportado')}")
             return  # é um evento de status (entregue/lido), não uma mensagem nova
 
         mensagem = value["messages"][0]
         remetente = mensagem["from"]  # número de telefone de quem mandou
         print(f"[webhook_whatsapp] Mensagem recebida de: {remetente}")
 
-        if mensagem.get("type") != "text":
+        if mensagem.get("type") == "text":
+            texto = mensagem["text"]["body"]
+        elif mensagem.get("type") == "image":
+            imagem = mensagem.get("image", {})
+            legenda = imagem.get("caption", "")
+            media_id = imagem.get("id", "")
+            texto = f"[Foto de referência enviada pelo cliente"
+            if legenda:
+                texto += f" - legenda: {legenda}"
+            texto += f"] (media_id: {media_id})"
+        else:
             enviar_mensagem_whatsapp(
                 remetente,
-                "No momento só consigo responder mensagens de texto. Pode escrever sua dúvida?",
+                "No momento consigo processar texto e fotos. Pode descrever em texto ou mandar uma imagem?",
             )
             return
-
-        texto = mensagem["text"]["body"]
 
     except (KeyError, IndexError) as e:
         print(f"[webhook_whatsapp] Payload inesperado, ignorando: {e}")
