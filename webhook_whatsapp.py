@@ -23,6 +23,7 @@ rodar o uvicorn, ex (Windows / PowerShell):
 """
 
 import os
+import base64
 import requests
 
 import db
@@ -87,6 +88,38 @@ def enviar_mensagem_whatsapp(destinatario: str, texto: str):
     return resposta
 
 
+def baixar_midia(media_id: str):
+    """
+    Baixa uma mídia (foto) recebida pelo WhatsApp. É um processo em 2 passos:
+    1. Pergunta pra Meta qual é a URL temporária dessa mídia (expira em minutos)
+    2. Baixa o conteúdo de verdade dessa URL
+
+    Devolve (base64_da_imagem, mime_type) ou (None, None) se der errado.
+    """
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+
+    try:
+        resp_info = requests.get(
+            f"https://graph.facebook.com/{GRAPH_API_VERSION}/{media_id}",
+            headers=headers,
+            timeout=10,
+        )
+        resp_info.raise_for_status()
+        info = resp_info.json()
+        media_url = info["url"]
+        mime_type = info.get("mime_type", "image/jpeg")
+
+        resp_arquivo = requests.get(media_url, headers=headers, timeout=15)
+        resp_arquivo.raise_for_status()
+
+        base64_str = base64.b64encode(resp_arquivo.content).decode("utf-8")
+        return base64_str, mime_type
+
+    except requests.RequestException as e:
+        print(f"[webhook_whatsapp] Erro ao baixar mídia {media_id}: {e}")
+        return None, None
+
+
 def processar_mensagem_recebida(payload: dict):
     """
     Extrai a mensagem de texto do payload que a Meta manda no POST e
@@ -110,16 +143,27 @@ def processar_mensagem_recebida(payload: dict):
         remetente = mensagem["from"]  # número de telefone de quem mandou
         print(f"[webhook_whatsapp] Mensagem recebida de: {remetente}")
 
+        imagem_base64 = None
+        imagem_mime_type = None
+
         if mensagem.get("type") == "text":
             texto = mensagem["text"]["body"]
         elif mensagem.get("type") == "image":
             imagem = mensagem.get("image", {})
             legenda = imagem.get("caption", "")
             media_id = imagem.get("id", "")
-            texto = f"[Foto de referência enviada pelo cliente"
-            if legenda:
-                texto += f" - legenda: {legenda}"
-            texto += f"] (media_id: {media_id})"
+
+            imagem_base64, imagem_mime_type = baixar_midia(media_id)
+
+            if imagem_base64:
+                texto = "[Foto de referência enviada pelo cliente"
+                if legenda:
+                    texto += f" - legenda: {legenda}"
+                texto += "]"
+            else:
+                # não conseguiu baixar a imagem (link expirado, erro de rede, etc.)
+                # segue o fluxo mesmo assim, só sem anexar a foto
+                texto = "[Cliente tentou enviar uma foto, mas não foi possível processá-la]"
         else:
             enviar_mensagem_whatsapp(
                 remetente,
@@ -136,5 +180,5 @@ def processar_mensagem_recebida(payload: dict):
         print(f"[webhook_whatsapp] Negócio com slug '{WHATSAPP_NEGOCIO_SLUG}' não encontrado no banco.")
         return
 
-    resposta_texto = bot.process_message(negocio["id"], remetente, texto)
+    resposta_texto = bot.process_message(negocio["id"], remetente, texto, imagem_base64, imagem_mime_type)
     enviar_mensagem_whatsapp(remetente, resposta_texto)

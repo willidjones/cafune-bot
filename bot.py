@@ -94,10 +94,18 @@ def montar_catalogo(servicos: list) -> str:
     return f"Nosso catálogo:\n\n{lista}\n\nQuer fazer um pedido? É só digitar *pedido*."
 
 
-def process_message(negocio_id: int, cliente_telefone: str, texto: str) -> str:
+def process_message(negocio_id: int, cliente_telefone: str, texto: str,
+                     imagem_base64: str = None, imagem_mime_type: str = None) -> str:
     session = get_session(cliente_telefone)
     session["dados"]["negocio_id"] = negocio_id  # guardamos pra usar nos sub-estados
     estado = session["estado"]
+
+    # Se essa mensagem trouxe uma imagem, guardamos junto na sessão — ela
+    # vai junto quando o pedido for salvo no banco, independente de em
+    # qual passo do fluxo o cliente decidiu mandar a foto.
+    if imagem_base64:
+        session["dados"]["imagem_base64"] = imagem_base64
+        session["dados"]["imagem_mime_type"] = imagem_mime_type
 
     conn = db.get_conn()
     negocio_row = conn.execute("SELECT * FROM negocios WHERE id = ?", (negocio_id,)).fetchone()
@@ -288,6 +296,8 @@ def _ped_tratar_confirmacao_nome(session, negocio_id, cliente_telefone, texto):
         produto_servico_id=dados["produto_id"],
         quantidade=dados["quantidade"],
         personalizacao=dados["personalizacao"],
+        imagem_base64=dados.get("imagem_base64"),
+        imagem_mime_type=dados.get("imagem_mime_type"),
     )
 
     total = dados["produto_preco"] * dados["quantidade"]

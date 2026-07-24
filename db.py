@@ -136,6 +136,8 @@ def init_db():
         produto_servico_id INTEGER NOT NULL REFERENCES produtos_servicos(id),
         quantidade INTEGER DEFAULT 1,
         personalizacao TEXT,
+        imagem_base64 TEXT,
+        imagem_mime_type TEXT,
         status TEXT DEFAULT 'novo',
         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP(0)
     );
@@ -158,6 +160,8 @@ def _migrar_schema(conn):
     cur.execute("ALTER TABLE negocios ADD COLUMN IF NOT EXISTS descricao TEXT")
     cur.execute("ALTER TABLE negocios ADD COLUMN IF NOT EXISTS slug TEXT")
     cur.execute("ALTER TABLE produtos_servicos ADD COLUMN IF NOT EXISTS estoque INTEGER")
+    cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS imagem_base64 TEXT")
+    cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS imagem_mime_type TEXT")
 
     # Garante que todo negócio (novo ou antigo) tenha um slug de acesso.
     cur.execute("SELECT id FROM negocios WHERE slug IS NULL OR slug = ''")
@@ -527,13 +531,15 @@ def excluir_excecao(excecao_id):
     conn.close()
 
 
-def criar_pedido(negocio_id, cliente_telefone, cliente_nome, produto_servico_id, quantidade, personalizacao):
+def criar_pedido(negocio_id, cliente_telefone, cliente_nome, produto_servico_id, quantidade,
+                  personalizacao, imagem_base64=None, imagem_mime_type=None):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO pedidos (negocio_id, cliente_telefone, cliente_nome, produto_servico_id, "
-        "quantidade, personalizacao) VALUES (?, ?, ?, ?, ?, ?)",
-        (negocio_id, cliente_telefone, cliente_nome, produto_servico_id, quantidade, personalizacao),
+        "quantidade, personalizacao, imagem_base64, imagem_mime_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (negocio_id, cliente_telefone, cliente_nome, produto_servico_id, quantidade,
+         personalizacao, imagem_base64, imagem_mime_type),
     )
     # Baixa automática no estoque — só afeta produtos com controle de estoque (estoque não-nulo).
     # Pode ficar negativo de propósito: é o sinal de que vendeu mais do que tinha disponível.

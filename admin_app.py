@@ -618,6 +618,12 @@ def _render_pagina_pedidos(negocio, base, is_admin):
             <td>{p['produto_nome']}</td>
             <td>{p['quantidade']}</td>
             <td>{p['personalizacao'] or '-'}</td>
+            <td>
+                {f'<a href="data:{p["imagem_mime_type"] or "image/jpeg"};base64,{p["imagem_base64"]}" target="_blank">'
+                 f'<img src="data:{p["imagem_mime_type"] or "image/jpeg"};base64,{p["imagem_base64"]}" '
+                 f'style="max-width:70px; max-height:70px; border-radius:6px; display:block;"></a>'
+                 if p.get('imagem_base64') else '-'}
+            </td>
             <td>R$ {p['produto_preco'] * p['quantidade']:.2f}</td>
             <td>{p['criado_em']}</td>
             <td>
@@ -637,9 +643,9 @@ def _render_pagina_pedidos(negocio, base, is_admin):
         <table>
             <tr>
                 <th>#</th><th>Cliente</th><th>Produto</th><th>Qtd</th>
-                <th>Personalização</th><th>Total</th><th>Recebido em</th><th>Status</th>
+                <th>Personalização</th><th>Foto</th><th>Total</th><th>Recebido em</th><th>Status</th>
             </tr>
-            {linhas or '<tr><td colspan="8">Nenhum pedido recebido ainda.</td></tr>'}
+            {linhas or '<tr><td colspan="9">Nenhum pedido recebido ainda.</td></tr>'}
         </table>
     </div>
     """
