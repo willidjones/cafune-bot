@@ -92,7 +92,8 @@ def init_db():
         descricao TEXT,
         preco REAL,
         duracao_minutos INTEGER DEFAULT 30,
-        estoque INTEGER  -- NULL = não controla estoque (ilimitado); número = quantidade disponível
+        estoque INTEGER,  -- NULL = não controla estoque (ilimitado); número = quantidade disponível
+        categoria TEXT NOT NULL DEFAULT 'Outros'
     );
 
     CREATE TABLE IF NOT EXISTS faq (
@@ -162,6 +163,7 @@ def _migrar_schema(conn):
     cur.execute("ALTER TABLE produtos_servicos ADD COLUMN IF NOT EXISTS estoque INTEGER")
     cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS imagem_base64 TEXT")
     cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS imagem_mime_type TEXT")
+    cur.execute("ALTER TABLE produtos_servicos ADD COLUMN IF NOT EXISTS categoria TEXT NOT NULL DEFAULT 'Outros'")
 
     # Garante que todo negócio (novo ou antigo) tenha um slug de acesso.
     cur.execute("SELECT id FROM negocios WHERE slug IS NULL OR slug = ''")
@@ -294,6 +296,30 @@ def get_servicos(negocio_id: int):
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM produtos_servicos WHERE negocio_id = ? ORDER BY id", (negocio_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def listar_categorias(negocio_id: int):
+    """Devolve as categorias em uso, na ordem em que o primeiro produto de
+    cada uma foi cadastrado (fica mais previsível pro lojista do que ordem
+    alfabética pura)."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT categoria, MIN(id) as primeiro_id FROM produtos_servicos "
+        "WHERE negocio_id = ? GROUP BY categoria ORDER BY primeiro_id",
+        (negocio_id,),
+    ).fetchall()
+    conn.close()
+    return [r["categoria"] for r in rows]
+
+
+def get_servicos_por_categoria(negocio_id: int, categoria: str):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM produtos_servicos WHERE negocio_id = ? AND categoria = ? ORDER BY id",
+        (negocio_id, categoria),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -444,12 +470,12 @@ def atualizar_negocio(negocio_id, nome, telefone_whatsapp, descricao, horario_fu
     conn.close()
 
 
-def atualizar_servico(servico_id, nome, descricao, preco, duracao_minutos, estoque=None):
+def atualizar_servico(servico_id, nome, descricao, preco, duracao_minutos, estoque=None, categoria="Outros"):
     conn = get_conn()
     conn.execute(
         "UPDATE produtos_servicos SET nome = ?, descricao = ?, preco = ?, duracao_minutos = ?, "
-        "estoque = ? WHERE id = ?",
-        (nome, descricao, preco, duracao_minutos, estoque, servico_id),
+        "estoque = ?, categoria = ? WHERE id = ?",
+        (nome, descricao, preco, duracao_minutos, estoque, categoria or "Outros", servico_id),
     )
     conn.commit()
     conn.close()
@@ -462,12 +488,12 @@ def get_servico(servico_id: int):
     return dict(row) if row else None
 
 
-def criar_servico(negocio_id, nome, descricao, preco, duracao_minutos, estoque=None):
+def criar_servico(negocio_id, nome, descricao, preco, duracao_minutos, estoque=None, categoria="Outros"):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO produtos_servicos (negocio_id, nome, descricao, preco, duracao_minutos, estoque) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (negocio_id, nome, descricao, preco, duracao_minutos, estoque),
+        "INSERT INTO produtos_servicos (negocio_id, nome, descricao, preco, duracao_minutos, estoque, categoria) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (negocio_id, nome, descricao, preco, duracao_minutos, estoque, categoria or "Outros"),
     )
     conn.commit()
     conn.close()

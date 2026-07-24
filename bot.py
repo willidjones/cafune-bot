@@ -10,17 +10,25 @@ O negócio tem um `tipo_atendimento`:
   - 'agendamento' -> fluxo de marcar horário (ex: salão, clínica)
   - 'pedido'      -> fluxo de captar encomenda (ex: produtos personalizados)
 O menu e a máquina de estados se ajustam de acordo.
+
+Produtos/serviços têm uma `categoria` (ex: "Canecas", "Squeezes/Garrafas").
+Se o negócio tiver mais de uma categoria em uso, o cliente escolhe a
+categoria primeiro, depois o produto dentro dela — evita uma lista gigante
+de uma vez só. Se só existir uma categoria (ou nenhuma), pula direto pra
+lista de produtos, sem esse passo extra.
 """
 
 import db
 
 # Estados - fluxo de agendamento
 ESTADO_INICIAL = "inicial"
+ESTADO_AG_ESCOLHENDO_CATEGORIA = "ag_escolhendo_categoria"
 ESTADO_AG_ESCOLHENDO_SERVICO = "ag_escolhendo_servico"
 ESTADO_AG_ESCOLHENDO_HORARIO = "ag_escolhendo_horario"
 ESTADO_AG_CONFIRMANDO_NOME = "ag_confirmando_nome"
 
 # Estados - fluxo de pedido/encomenda
+ESTADO_PED_ESCOLHENDO_CATEGORIA = "ped_escolhendo_categoria"
 ESTADO_PED_ESCOLHENDO_PRODUTO = "ped_escolhendo_produto"
 ESTADO_PED_QUANTIDADE = "ped_quantidade"
 ESTADO_PED_PERSONALIZACAO = "ped_personalizacao"
@@ -83,15 +91,36 @@ def montar_menu(negocio: dict) -> str:
         )
 
 
-def montar_catalogo(servicos: list) -> str:
-    linhas = []
-    for s in servicos:
-        linha = f"• {s['nome']} - R$ {s['preco']:.2f}"
-        if s.get("estoque") is not None and s["estoque"] <= 0:
-            linha += " (sem estoque no momento)"
-        linhas.append(linha)
-    lista = "\n".join(linhas)
-    return f"Nosso catálogo:\n\n{lista}\n\nQuer fazer um pedido? É só digitar *pedido*."
+def _formatar_item(s: dict, indice: int) -> str:
+    linha = f"{indice}. {s['nome']} - R$ {s['preco']:.2f}"
+    if s.get("estoque") is not None and s["estoque"] <= 0:
+        linha += " (sem estoque no momento)"
+    return linha
+
+
+def montar_catalogo(servicos: list, categorias: list) -> str:
+    """Catálogo agrupado por categoria (quando há mais de uma em uso)."""
+    if len(categorias) <= 1:
+        linhas = [f"• {s['nome']} - R$ {s['preco']:.2f}" +
+                  (" (sem estoque no momento)" if s.get("estoque") is not None and s["estoque"] <= 0 else "")
+                  for s in servicos]
+        lista = "\n".join(linhas)
+        return f"Nosso catálogo:\n\n{lista}\n\nQuer fazer um pedido? É só digitar *pedido*."
+
+    blocos = []
+    for cat in categorias:
+        itens_da_cat = [s for s in servicos if s["categoria"] == cat]
+        if not itens_da_cat:
+            continue
+        linhas = "\n".join(
+            f"• {s['nome']} - R$ {s['preco']:.2f}" +
+            (" (sem estoque no momento)" if s.get("estoque") is not None and s["estoque"] <= 0 else "")
+            for s in itens_da_cat
+        )
+        blocos.append(f"*{cat}*\n{linhas}")
+
+    corpo = "\n\n".join(blocos)
+    return f"Nosso catálogo:\n\n{corpo}\n\nQuer fazer um pedido? É só digitar *pedido*."
 
 
 def process_message(negocio_id: int, cliente_telefone: str, texto: str,
@@ -115,17 +144,22 @@ def process_message(negocio_id: int, cliente_telefone: str, texto: str,
 
     faqs = db.get_faq(negocio_id)
     servicos = db.get_servicos(negocio_id)
+    categorias = db.listar_categorias(negocio_id)
 
     # --- Máquina de estados: continuação de um fluxo em andamento ---
+    if estado == ESTADO_AG_ESCOLHENDO_CATEGORIA:
+        return _tratar_escolha_categoria(session, categorias, servicos, tipo, texto)
     if estado == ESTADO_AG_ESCOLHENDO_SERVICO:
-        return _ag_tratar_escolha_servico(session, servicos, texto)
+        return _ag_tratar_escolha_servico(session, texto)
     if estado == ESTADO_AG_ESCOLHENDO_HORARIO:
         return _ag_tratar_escolha_horario(session, texto)
     if estado == ESTADO_AG_CONFIRMANDO_NOME:
         return _ag_tratar_confirmacao_nome(session, negocio_id, cliente_telefone, texto)
 
+    if estado == ESTADO_PED_ESCOLHENDO_CATEGORIA:
+        return _tratar_escolha_categoria(session, categorias, servicos, tipo, texto)
     if estado == ESTADO_PED_ESCOLHENDO_PRODUTO:
-        return _ped_tratar_escolha_produto(session, servicos, texto)
+        return _ped_tratar_escolha_produto(session, texto)
     if estado == ESTADO_PED_QUANTIDADE:
         return _ped_tratar_quantidade(session, texto)
     if estado == ESTADO_PED_PERSONALIZACAO:
@@ -137,9 +171,9 @@ def process_message(negocio_id: int, cliente_telefone: str, texto: str,
     # Trata primeiro os atalhos numéricos do menu (1, 2, 3).
     texto_limpo = texto.strip()
     if texto_limpo == "1":
-        return montar_catalogo(servicos)
+        return montar_catalogo(servicos, categorias)
     if texto_limpo == "2":
-        return _iniciar_fluxo(session, servicos, tipo)
+        return _iniciar_fluxo(session, categorias, servicos, tipo)
     if texto_limpo == "3":
         info_faq = "\n".join(f"• {f['resposta']}" for f in faqs)
         return f"Aqui estão nossas informações:\n\n{info_faq}"
@@ -150,7 +184,7 @@ def process_message(negocio_id: int, cliente_telefone: str, texto: str,
         return montar_menu(negocio)
 
     if intencao == "iniciar_fluxo":
-        return _iniciar_fluxo(session, servicos, tipo)
+        return _iniciar_fluxo(session, categorias, servicos, tipo)
 
     if intencao.startswith("faq:"):
         faq_id = int(intencao.split(":")[1])
@@ -158,7 +192,7 @@ def process_message(negocio_id: int, cliente_telefone: str, texto: str,
         return item["resposta"]
 
     if any(p in texto.lower() for p in ["servico", "serviço", "produto", "preco", "preço", "catalogo", "catálogo"]):
-        return montar_catalogo(servicos)
+        return montar_catalogo(servicos, categorias)
 
     # Fallback: não entendeu -> encaminha pra humano
     return (
@@ -168,32 +202,64 @@ def process_message(negocio_id: int, cliente_telefone: str, texto: str,
     )
 
 
-def _iniciar_fluxo(session, servicos, tipo):
-    linhas = []
-    for i, s in enumerate(servicos):
-        linha = f"{i+1}. {s['nome']} - R$ {s['preco']:.2f}"
-        if s.get("estoque") is not None and s["estoque"] <= 0:
-            linha += " (sem estoque no momento)"
-        linhas.append(linha)
-    lista = "\n".join(linhas)
+def _iniciar_fluxo(session, categorias, servicos, tipo):
+    session["dados"]["tipo"] = tipo
+
+    # Só pergunta a categoria se houver mais de uma em uso — senão, pula
+    # direto pra lista de produtos/serviços, pra não criar fricção à toa.
+    if len(categorias) > 1:
+        if tipo == "agendamento":
+            session["estado"] = ESTADO_AG_ESCOLHENDO_CATEGORIA
+        else:
+            session["estado"] = ESTADO_PED_ESCOLHENDO_CATEGORIA
+        lista = "\n".join(f"{i+1}. {c}" for i, c in enumerate(categorias))
+        verbo = "agendar" if tipo == "agendamento" else "encomendar"
+        return f"Legal! Qual categoria você quer {verbo}?\n\n{lista}\n\nDigite o número da opção."
+
+    return _listar_itens_para_escolha(session, servicos, tipo)
+
+
+def _tratar_escolha_categoria(session, categorias, servicos, tipo, texto):
+    texto = texto.strip()
+    if not texto.isdigit() or not (1 <= int(texto) <= len(categorias)):
+        return f"Não entendi. Digite um número de 1 a {len(categorias)} referente à categoria."
+
+    categoria_escolhida = categorias[int(texto) - 1]
+    itens_da_categoria = [s for s in servicos if s["categoria"] == categoria_escolhida]
+    return _listar_itens_para_escolha(session, itens_da_categoria, tipo)
+
+
+def _listar_itens_para_escolha(session, itens, tipo):
+    """Mostra a lista de produtos/serviços (já filtrada por categoria, se
+    for o caso) e guarda essa lista específica na sessão, porque os
+    próximos passos (escolher quantidade/horário) precisam saber a quais
+    itens os números '1, 2, 3...' se referem."""
+    session["dados"]["itens_disponiveis"] = itens
+    lista = "\n".join(_formatar_item(s, i + 1) for i, s in enumerate(itens))
+
+    if not itens:
+        session["estado"] = ESTADO_INICIAL
+        return "Não encontrei itens nessa categoria no momento. Digite *menu* para ver as opções."
+
     if tipo == "agendamento":
         session["estado"] = ESTADO_AG_ESCOLHENDO_SERVICO
-        return f"Ótimo! Qual serviço você quer agendar?\n\n{lista}\n\nDigite o número da opção."
+        return f"Qual serviço você quer agendar?\n\n{lista}\n\nDigite o número da opção."
     else:
         session["estado"] = ESTADO_PED_ESCOLHENDO_PRODUTO
-        return f"Ótimo! Qual produto você quer encomendar?\n\n{lista}\n\nDigite o número da opção."
+        return f"Qual produto você quer encomendar?\n\n{lista}\n\nDigite o número da opção."
 
 
 # ---------------------------------------------------------------------------
 # Fluxo: AGENDAMENTO
 # ---------------------------------------------------------------------------
 
-def _ag_tratar_escolha_servico(session, servicos, texto):
+def _ag_tratar_escolha_servico(session, texto):
     texto = texto.strip()
-    if not texto.isdigit() or not (1 <= int(texto) <= len(servicos)):
-        return f"Não entendi. Digite um número de 1 a {len(servicos)} referente ao serviço."
+    itens = session["dados"].get("itens_disponiveis", [])
+    if not texto.isdigit() or not (1 <= int(texto) <= len(itens)):
+        return f"Não entendi. Digite um número de 1 a {len(itens)} referente ao serviço."
 
-    servico = servicos[int(texto) - 1]
+    servico = itens[int(texto) - 1]
     session["dados"]["servico_id"] = servico["id"]
     session["dados"]["servico_nome"] = servico["nome"]
     session["estado"] = ESTADO_AG_ESCOLHENDO_HORARIO
@@ -251,12 +317,13 @@ def _ag_tratar_confirmacao_nome(session, negocio_id, cliente_telefone, texto):
 # Fluxo: PEDIDO / ENCOMENDA
 # ---------------------------------------------------------------------------
 
-def _ped_tratar_escolha_produto(session, servicos, texto):
+def _ped_tratar_escolha_produto(session, texto):
     texto = texto.strip()
-    if not texto.isdigit() or not (1 <= int(texto) <= len(servicos)):
-        return f"Não entendi. Digite um número de 1 a {len(servicos)} referente ao produto."
+    itens = session["dados"].get("itens_disponiveis", [])
+    if not texto.isdigit() or not (1 <= int(texto) <= len(itens)):
+        return f"Não entendi. Digite um número de 1 a {len(itens)} referente ao produto."
 
-    produto = servicos[int(texto) - 1]
+    produto = itens[int(texto) - 1]
     session["dados"]["produto_id"] = produto["id"]
     session["dados"]["produto_nome"] = produto["nome"]
     session["dados"]["produto_preco"] = produto["preco"]

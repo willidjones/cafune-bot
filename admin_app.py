@@ -195,11 +195,13 @@ def layout(negocio: dict, conteudo: str, base: str, is_admin: bool) -> str:
 def _render_pagina_servicos(negocio, base, is_admin):
     negocio_id = negocio["id"]
     servicos = db.get_servicos(negocio_id)
+    categorias = db.listar_categorias(negocio_id)
 
-    linhas = "".join(
-        f"""<tr>
+    def linha_servico(s):
+        return f"""<tr>
             <td>{s['nome']}</td>
             <td>{s['descricao'] or ''}</td>
+            <td>{s['categoria']}</td>
             <td>R$ {s['preco']:.2f}</td>
             <td>{s['duracao_minutos']} min</td>
             <td>{'—' if s['estoque'] is None else s['estoque']}</td>
@@ -210,8 +212,11 @@ def _render_pagina_servicos(negocio, base, is_admin):
                 </form>
             </td>
         </tr>"""
-        for s in servicos
-    )
+
+    # Agrupa visualmente por categoria (mais fácil de ler que uma lista plana)
+    linhas = "".join(linha_servico(s) for s in servicos)
+
+    opcoes_categoria_existente = "".join(f'<option value="{c}">{c}</option>' for c in categorias)
 
     conteudo = f"""
     <h2>Dados do negócio</h2>
@@ -246,8 +251,8 @@ def _render_pagina_servicos(negocio, base, is_admin):
     <h2>Serviços / Produtos</h2>
     <div class="card">
         <table>
-            <tr><th>Nome</th><th>Descrição</th><th>Preço</th><th>Duração</th><th>Estoque</th><th></th></tr>
-            {linhas or '<tr><td colspan="6">Nenhum serviço cadastrado ainda.</td></tr>'}
+            <tr><th>Nome</th><th>Descrição</th><th>Categoria</th><th>Preço</th><th>Duração</th><th>Estoque</th><th></th></tr>
+            {linhas or '<tr><td colspan="7">Nenhum serviço cadastrado ainda.</td></tr>'}
         </table>
     </div>
 
@@ -257,6 +262,11 @@ def _render_pagina_servicos(negocio, base, is_admin):
             <div class="form-row">
                 <input name="nome" placeholder="Nome do serviço" required>
                 <input name="descricao" placeholder="Descrição (opcional)">
+            </div>
+            <div class="form-row">
+                <input name="categoria" list="lista-categorias" placeholder="Categoria (ex: Canecas)" value="Outros">
+                <datalist id="lista-categorias">{opcoes_categoria_existente}</datalist>
+                <span style="color:#888; font-size:12px;">Digite uma categoria existente ou uma nova.</span>
             </div>
             <div class="form-row">
                 <input name="preco" type="number" step="0.01" placeholder="Preço (R$)" required>
@@ -310,10 +320,11 @@ def add_servico(
     preco: float = Form(...),
     duracao_minutos: int = Form(30),
     estoque: str = Form(""),
+    categoria: str = Form("Outros"),
 ):
     negocio = db.get_negocio(negocio_id) if negocio_id else db.get_negocio_by_slug(slug)
     estoque_val = int(estoque) if estoque.strip() != "" else None
-    db.criar_servico(negocio["id"], nome, descricao, preco, duracao_minutos, estoque_val)
+    db.criar_servico(negocio["id"], nome, descricao, preco, duracao_minutos, estoque_val, categoria.strip() or "Outros")
     base = f"/admin/{negocio_id}" if negocio_id else f"/loja/{slug}"
     return RedirectResponse(base, status_code=303)
 
@@ -328,6 +339,8 @@ def del_servico(servico_id: int, negocio_id: int = None, slug: str = None):
 
 def _render_editar_servico(negocio, servico, base, is_admin):
     estoque_atual = "" if servico["estoque"] is None else servico["estoque"]
+    categorias = db.listar_categorias(negocio["id"])
+    opcoes_categoria_existente = "".join(f'<option value="{c}">{c}</option>' for c in categorias)
     conteudo = f"""
     <h2>Editar serviço/produto</h2>
     <div class="card">
@@ -335,6 +348,10 @@ def _render_editar_servico(negocio, servico, base, is_admin):
             <div class="form-row">
                 <input name="nome" value="{servico['nome']}" placeholder="Nome" required>
                 <input name="descricao" value="{servico['descricao'] or ''}" placeholder="Descrição" style="width:250px;">
+            </div>
+            <div class="form-row">
+                <input name="categoria" list="lista-categorias" value="{servico['categoria']}" placeholder="Categoria">
+                <datalist id="lista-categorias">{opcoes_categoria_existente}</datalist>
             </div>
             <div class="form-row">
                 <input name="preco" type="number" step="0.01" value="{servico['preco']}" placeholder="Preço (R$)" required>
@@ -376,9 +393,10 @@ def salvar_edicao_servico(
     preco: float = Form(...),
     duracao_minutos: int = Form(30),
     estoque: str = Form(""),
+    categoria: str = Form("Outros"),
 ):
     estoque_val = int(estoque) if estoque.strip() != "" else None
-    db.atualizar_servico(servico_id, nome, descricao, preco, duracao_minutos, estoque_val)
+    db.atualizar_servico(servico_id, nome, descricao, preco, duracao_minutos, estoque_val, categoria.strip() or "Outros")
     base = f"/admin/{negocio_id}" if negocio_id else f"/loja/{slug}"
     return RedirectResponse(base, status_code=303)
 
