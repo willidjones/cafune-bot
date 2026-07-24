@@ -99,14 +99,8 @@ def _formatar_item(s: dict, indice: int) -> str:
 
 
 def montar_catalogo(servicos: list, categorias: list) -> str:
-    """Catálogo agrupado por categoria (quando há mais de uma em uso)."""
-    if len(categorias) <= 1:
-        linhas = [f"• {s['nome']} - R$ {s['preco']:.2f}" +
-                  (" (sem estoque no momento)" if s.get("estoque") is not None and s["estoque"] <= 0 else "")
-                  for s in servicos]
-        lista = "\n".join(linhas)
-        return f"Nosso catálogo:\n\n{lista}\n\nQuer fazer um pedido? É só digitar *pedido*."
-
+    """Catálogo sempre agrupado por categoria — ajuda a organizar
+    visualmente mesmo quando só existe uma categoria em uso."""
     blocos = []
     for cat in categorias:
         itens_da_cat = [s for s in servicos if s["categoria"] == cat]
